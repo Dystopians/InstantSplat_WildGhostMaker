@@ -11,6 +11,7 @@
 
 import os
 import sys
+import re
 import torch
 from PIL import Image
 from typing import NamedTuple
@@ -106,6 +107,66 @@ def loadCameras(poses, viewpoint_stack):
 def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     cam_infos = []
     poses=[]
+    # Build available files index
+    try:
+        avail_files = [f for f in os.listdir(images_folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))]
+    except FileNotFoundError:
+        avail_files = []
+    avail_files_sorted = sorted(avail_files)
+    avail_bases = {os.path.splitext(f)[0]: f for f in avail_files}
+
+    def parse_pt_h(name_base: str):
+        pt_m = re.search(r"pt(\d+)", name_base)
+        h_m = re.search(r"h(\d+)", name_base)
+        pt = pt_m.group(1) if pt_m else "000"
+        h = int(h_m.group(1)) if h_m else -1
+        return pt, h
+
+    # Detect if any extr image is missing; if so, compute a sequential remap starting from the first file's heading
+    need_remap = False
+    for key in cam_extrinsics:
+        base = os.path.splitext(os.path.basename(cam_extrinsics[key].name))[0]
+        if base not in avail_bases:
+            need_remap = True
+            break
+
+    remap_basename_to_filename = {}
+    if need_remap and len(avail_files_sorted) > 0:
+        # Group extrinsics and available files by pt, sort by heading
+        extr_by_pt = {}
+        for key in cam_extrinsics:
+            base = os.path.splitext(os.path.basename(cam_extrinsics[key].name))[0]
+            pt, h = parse_pt_h(base)
+            extr_by_pt.setdefault(pt, []).append((base, h))
+        for pt in extr_by_pt:
+            extr_by_pt[pt].sort(key=lambda x: x[1])
+
+        avail_by_pt = {}
+        for f in avail_files_sorted:
+            b = os.path.splitext(f)[0]
+            pt, h = parse_pt_h(b)
+            avail_by_pt.setdefault(pt, []).append((b, h, f))
+        for pt in avail_by_pt:
+            avail_by_pt[pt].sort(key=lambda x: x[1])
+
+        # For each pt, rotate available list so that it starts from the first file present for that pt
+        for pt, extr_list in extr_by_pt.items():
+            avail_list = avail_by_pt.get(pt, [])
+            if not avail_list:
+                continue
+            # Determine start index by the first available file's heading
+            start_h = avail_list[0][1]
+            start_idx = 0
+            for i, (_b, h, _f) in enumerate(avail_list):
+                if h == start_h:
+                    start_idx = i
+                    break
+            # Build a rotated list
+            rotated = avail_list[start_idx:] + avail_list[:start_idx]
+            # Map extr bases to filenames sequentially
+            for i, (extr_base, _h) in enumerate(extr_list):
+                chosen = rotated[i % len(rotated)]
+                remap_basename_to_filename[extr_base] = chosen[2]
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
         # the exact output you're looking for:
@@ -117,13 +178,21 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         height = intr.height
         width = intr.width
 
-        uid = intr.id
+        # Use COLMAP image id (extr.id) as unique identifier for this camera
+        uid = extr.id
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
         pose = np.block([[R, T.reshape(3, 1)], [np.zeros((1, 3)), 1]])
         poses.append(pose)
 
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        # Resolve image path with fallback remap if needed
+        extr_basename = os.path.basename(extr.name)
+        extr_base_noext = os.path.splitext(extr_basename)[0]
+        if extr_base_noext in remap_basename_to_filename:
+            final_filename = remap_basename_to_filename[extr_base_noext]
+        else:
+            final_filename = avail_bases.get(extr_base_noext, extr_basename)
+        image_path = os.path.join(images_folder, final_filename)
         image_name = os.path.basename(image_path).split(".")[0]
         image = Image.open(image_path)
 

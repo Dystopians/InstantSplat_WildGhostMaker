@@ -1,22 +1,21 @@
 #!/bin/bash
 
 # Change the absolute path first!
-DATA_ROOT_DIR="<Absolute_Path>/InstantSplat/assets"
+DATA_ROOT_DIR="/data2/peilincai/InstantSplat/assets"
 OUTPUT_DIR="output_infer"
 DATASETS=(
     sora
 )
 
 SCENES=(
-    Santorini
-    Art 
+    example
 )
 
 N_VIEWS=(
-    3
+    16
 )
 
-gs_train_iter=1000
+gs_train_iter=4000
 
 # Function to get the id of an available GPU
 get_available_gpu() {
@@ -66,6 +65,16 @@ run_on_gpu() {
     -r 1 \
     --n_views ${N_VIEW} \
     --iterations ${gs_train_iter} \
+    --position_lr_init 3e-5 \
+    --position_lr_final 3e-7 \
+    --position_lr_delay_mult 0.01 \
+    --position_lr_max_steps ${gs_train_iter} \
+    --feature_lr 0.0025 \
+    --opacity_lr 0.05 \
+    --scaling_lr 0.003 \
+    --rotation_lr 3e-4 \
+    --lambda_dssim 0.2 \
+    --init_scale_from_view_depth \
     --pp_optimizer \
     --optim_pose \
     > ${MODEL_PATH}/02_train.log 2>&1

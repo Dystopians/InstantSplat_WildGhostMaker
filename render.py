@@ -18,7 +18,7 @@ from argparse import ArgumentParser
 import torch
 import torchvision
 from tqdm import tqdm
-import imageio
+import imageio.v2 as imageio
 import numpy as np
 from pathlib import Path
 
@@ -71,9 +71,26 @@ def images_to_video(image_folder, output_video_path, fps=30):
         if filename.endswith(('.png', '.jpg', '.jpeg', '.JPG', '.PNG')):
             image_path = os.path.join(image_folder, filename)
             image = imageio.imread(image_path)
+            if image.dtype != np.uint8:
+                image = (np.clip(image, 0, 1) * 255).astype(np.uint8) if image.dtype in (np.float32, np.float64) else image.astype(np.uint8)
+            if image.ndim == 2:
+                image = np.repeat(image[..., None], 3, axis=2)
+            if image.shape[2] == 4:
+                image = image[..., :3]
             images.append(image)
 
-    imageio.mimwrite(output_video_path, images, fps=fps)
+    if len(images) == 0:
+        raise RuntimeError(f"No images found in folder: {image_folder}")
+
+    try:
+        imageio.mimwrite(output_video_path, images, fps=fps, codec='h264')
+    except Exception:
+        try:
+            with imageio.get_writer(output_video_path, format='FFMPEG', mode='I', fps=fps, codec='libx264') as writer:
+                for frame in images:
+                    writer.append_data(frame)
+        except Exception as e:
+            raise
 
 def render_set(model_path, name, iteration, views, gaussians, pipeline, background):
     render_path = os.path.join(model_path, name, "ours_{}".format(iteration), "renders")
